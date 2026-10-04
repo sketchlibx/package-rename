@@ -11,6 +11,8 @@ This demo is intentionally a **rename + archive-preservation tool**, not a signi
 - Does **not** ship a private signing key.
 - Adds validation for old-package removal, target-package presence, signature-record cleanup, changed-entry count and size delta.
 - Includes an instructional MP4 and an animated GIF preview.
+- Shows real processing progress instead of remaining at a fixed 10%; progress is emitted per archive entry and the browser yields during large scans.
+- Adds a live Details panel with current entry, processed/total entries, changed-entry count, replacement count and stage history.
 
 ## Test workflow
 

@@ -302,11 +302,17 @@ async function buildApk(entries, eocdComment) {
   return { bytes: concat(localBytes, centralBytes, eocd), outputMeta };
 }
 
-export async function renameApk(file) {
+export async function renameApk(file, onProgress = null) {
+  const progress = (stage, percent, detail = {}) => {
+    try { onProgress?.({ stage, percent: Math.max(0, Math.min(100, Math.round(percent))), ...detail }); } catch (_) {}
+  };
   if (!/\.apk$/i.test(file.name || '')) throw new Error('Please select an APK file.');
   if (file.size > 300 * 1024 * 1024) throw new Error('APK is larger than the 300 MB browser safety limit.');
+  progress('Reading APK', 8, { message: 'Reading ZIP central directory…' });
   const apk = await readApk(file);
+  progress('APK analyzed', 14, { message: `${apk.entries.length.toLocaleString()} archive entries found.`, totalEntries: apk.entries.length });
   const variants = packageVariants();
+  progress('Checking manifest', 18, { message: 'Checking AndroidManifest.xml for the source package…', currentEntry: 'AndroidManifest.xml' });
   const manifest = await decodeEntry(apk.manifest);
   const manifestResult = patchData(manifest, variants);
   if (manifestResult.count === 0) throw new Error(`Exact package ${SOURCE_PACKAGE} was not found in AndroidManifest.xml.`);
@@ -317,10 +323,25 @@ export async function renameApk(file) {
   let signatureRemoved = [];
   let unchangedCount = 0;
   let changedCount = 0;
+  const totalEntries = apk.entries.length;
+  let processedEntries = 0;
+  let lastProgressAt = 0;
+  progress('Scanning archive', 20, { message: `Scanning 0/${totalEntries.toLocaleString()} entries…`, processedEntries: 0, totalEntries });
 
   for (const e of apk.entries) {
+    const scanPercent = 20 + (processedEntries / totalEntries) * 50;
+    if (scanPercent - lastProgressAt >= 0.5 || processedEntries === 0) {
+      lastProgressAt = scanPercent;
+      progress('Scanning archive', scanPercent, { message: `Processing ${processedEntries.toLocaleString()}/${totalEntries.toLocaleString()} entries…`, processedEntries, totalEntries, currentEntry: e.name, changedCount, totalReplacements });
+    }
     if (isSignatureEntry(e.name)) {
       signatureRemoved.push(e.name);
+      processedEntries++;
+      const percent = 20 + (processedEntries / totalEntries) * 50;
+      if (percent - lastProgressAt >= 0.5 || processedEntries === totalEntries) {
+        lastProgressAt = percent;
+        progress('Scanning archive', percent, { message: `Scanning ${processedEntries.toLocaleString()}/${totalEntries.toLocaleString()} entries…`, processedEntries, totalEntries, currentEntry: e.name, changedCount, totalReplacements });
+      }
       continue;
     }
     const data = await decodeEntry(e);
@@ -339,10 +360,20 @@ export async function renameApk(file) {
       processed.push(e);
       unchangedCount++;
     }
+    processedEntries++;
+    const percent = 20 + (processedEntries / totalEntries) * 50;
+    if (percent - lastProgressAt >= 0.5 || processedEntries === totalEntries) {
+      lastProgressAt = percent;
+      progress('Scanning archive', percent, { message: `Scanning ${processedEntries.toLocaleString()}/${totalEntries.toLocaleString()} entries…`, processedEntries, totalEntries, currentEntry: e.name, changedCount, totalReplacements });
+    }
+    // Give the browser a chance to paint progress updates during large APK scans.
+    if (processedEntries % 24 === 0) await new Promise(resolve => setTimeout(resolve, 0));
   }
 
+  progress('Rebuilding APK', 72, { message: `Rebuilding archive with ${changedCount} changed entries…`, changedCount, totalReplacements });
   if (totalReplacements === 0) throw new Error(`No exact ${SOURCE_PACKAGE} references were found.`);
   const built = await buildApk(processed, apk.eocdComment);
+  progress('Verifying output', 88, { message: 'Re-opening the generated APK and checking archive integrity…' });
   const out = await readApk(built.bytes);
 
   let sourceRemaining = 0;
@@ -356,6 +387,7 @@ export async function renameApk(file) {
   if (sourceRemaining > 0) throw new Error('Safety stop: source package references remain in output APK. No download was created.');
   if (out.entries.some(e => isSignatureEntry(e.name))) throw new Error('Safety stop: stale signing metadata remains.');
   if (!out.entries.some(e => e.name === 'AndroidManifest.xml')) throw new Error('Safety stop: AndroidManifest.xml is missing after rebuild.');
+  progress('Final validation', 96, { message: `Validation passed: ${targetCount.toLocaleString()} target references found.`, targetReferences: targetCount, sourceGone: true });
 
   const outputName = (file.name || 'app.apk').replace(/\.apk$/i, '-neo-unsigned.apk');
   return {
@@ -378,6 +410,8 @@ export async function renameApk(file) {
       sizeDeltaPercent: ((built.bytes.length - file.size) / file.size) * 100,
     },
     outputName,
+    processedEntries: apk.entries.length,
+    totalEntries: apk.entries.length,
   };
 }
 

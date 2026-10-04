@@ -51,9 +51,14 @@
     </section>
 
     <section class="status-card card hidden" id="statusCard">
-      <div class="status-head"><span id="statusDot" class="dot"></span><strong id="statusTitle">Preparing…</strong><span id="statusPct"></span></div>
+      <div class="status-head"><span id="statusDot" class="dot"></span><strong id="statusTitle">Preparing…</strong><span id="statusPct"></span><button id="detailsBtn" class="ghost hidden" type="button">Details</button></div>
       <div class="progress"><div id="progressBar"></div></div>
       <div id="statusText" class="muted">Reading APK…</div>
+      <div class="status-meta"><span>Current: <b id="detailCurrent">—</b></span><span>Entries: <b id="detailCount">—</b></span><span>Changed: <b id="detailChanged">0</b></span><span>Replacements: <b id="detailReplacements">0</b></span></div>
+      <div id="detailsPanel" class="details-panel hidden">
+        <div class="details-head"><b>Processing details</b><button id="closeDetails" class="ghost" type="button">Close</button></div>
+        <div id="detailLog" class="detail-log"></div>
+      </div>
     </section>
 
     <section class="result-grid hidden" id="resultGrid">
