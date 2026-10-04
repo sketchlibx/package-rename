@@ -1,32 +1,43 @@
-# Neo Package Rename Demo
+# Neo Package Rename Demo — Cloudflare Pages
 
-Static Cloudflare Pages demo for testing a specific APK transformation:
+Browser-only prototype for testing:
 
 `pro.sketchware` → `neo.sketchware`
 
-## What it does
+## Cloudflare Pages deployment
 
-- Accepts an `.apk` file in the browser.
-- Reads the APK as a ZIP and requires `AndroidManifest.xml`.
-- Performs an exact-length binary replacement of `pro.sketchware` with `neo.sketchware` in APK entries outside `META-INF` (UTF-8 and UTF-16LE byte sequences).
-- Rebuilds the APK with a fresh ZIP structure.
-- Adds JAR/v1 signing metadata and an APK Signature Scheme v2 signing block using a **demo-only** embedded RSA identity.
-- Shows validation details and gives the output APK a `-neo.apk` filename.
+This is a **Cloudflare Pages** static site, not a Worker entry-point project.
 
-## Important limitations
+### Cloudflare project settings
 
-This is a validation prototype, not the final release pipeline. APK package renaming can affect more than the manifest: application code may contain generated application IDs, provider authorities, Firebase configuration, deep links, or other package-dependent values. The demo uses an exact-length substitution specifically because `pro` and `neo` have the same length, avoiding offset changes in binary data.
+- Build command: leave empty
+- Build output directory: `.`
+- Deploy command:
 
-The embedded signing key is intentionally public in this demo. Never use the resulting certificate for a real release or an update over an existing production install. The final GitHub workflow should sign with the repository's real release keystore.
+```bash
+npx wrangler pages deploy . --project-name neo-package-rename-demo
+```
 
-For production, the recommended flow is:
+If your existing Cloudflare Pages project has a different project name, replace `neo-package-rename-demo` with that exact Pages project name.
 
-1. Build Sketchware Pro normally.
-2. Run the package transformation before artifacts are uploaded.
-3. Verify the resulting APK with `aapt2 dump badging` and `apksigner verify --verbose` on the GitHub runner.
-4. Publish/attach **only** the transformed `neo.sketchware` APK.
-5. Send the same transformed APK to Telegram.
+Do **not** use:
 
-## Deploy on Cloudflare Pages
+```bash
+npx wrangler deploy
+```
 
-This project is static. Use Cloudflare Pages Direct Upload and upload the contents of this folder, or connect the repository and use `.` as the build output directory.
+That command is for Worker deployments and causes the `Missing entry-point to Worker script or to assets directory` error seen in the previous build.
+
+Cloudflare's current Wrangler command for static Pages deployments is `wrangler pages deploy [DIRECTORY]`.
+
+## What the demo does
+
+- Select or drag an APK in the browser.
+- Checks the source package as `pro.sketchware`.
+- Applies the prototype package transformation to `neo.sketchware`.
+- Rebuilds and signs the demo output.
+- Validates the transformed APK before download.
+
+## Important
+
+This is a test prototype, not the final Sketchware Neo release pipeline. The final GitHub workflow should transform the freshly built APK, verify its package using Android build tools, then publish/send only that transformed artifact.
