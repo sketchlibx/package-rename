@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111318">
+  <title>Neo Package Rename — APK Demo</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <div class="brand-mark">N</div>
+        <div>
+          <div class="eyebrow">SKETCHWARE NEO</div>
+          <h1>APK Package Rename</h1>
+        </div>
+      </div>
+      <div class="chip">Demo • local processing</div>
+    </header>
+
+    <section class="hero card">
+      <div>
+        <span class="badge">PRO → NEO</span>
+        <h2>Convert <code>pro.sketchware</code> to <code>neo.sketchware</code></h2>
+        <p>Upload a Sketchware Pro APK. The demo performs an exact-length package reference replacement, rebuilds the ZIP, and signs the result with a demo v1 + v2 identity.</p>
+      </div>
+      <div class="route">
+        <div><span>FROM</span><b>pro.sketchware</b></div>
+        <div class="arrow">→</div>
+        <div><span>TO</span><b>neo.sketchware</b></div>
+      </div>
+    </section>
+
+    <section class="upload-card card" id="dropzone">
+      <input id="apkInput" type="file" accept=".apk,application/vnd.android.package-archive" hidden>
+      <div class="upload-icon">↑</div>
+      <h3>Drop APK here</h3>
+      <p>or choose a file from your device</p>
+      <button id="pickBtn" class="primary">Choose APK</button>
+      <div class="file-note">The APK stays in your browser. Nothing is uploaded by this demo.</div>
+    </section>
+
+    <section class="status-card card hidden" id="statusCard">
+      <div class="status-head"><span id="statusDot" class="dot"></span><strong id="statusTitle">Preparing…</strong><span id="statusPct"></span></div>
+      <div class="progress"><div id="progressBar"></div></div>
+      <div id="statusText" class="muted">Reading APK…</div>
+    </section>
+
+    <section class="result-grid hidden" id="resultGrid">
+      <div class="result-card card">
+        <div class="result-head"><span class="check">✓</span><div><div class="eyebrow">RESULT</div><h3 id="resultTitle">Ready</h3></div></div>
+        <div class="kv"><span>Original</span><b id="origPkg">pro.sketchware</b></div>
+        <div class="kv"><span>Target</span><b id="targetPkg">neo.sketchware</b></div>
+        <div class="kv"><span>Manifest replacements</span><b id="manifestHits">—</b></div>
+        <div class="kv"><span>Total exact replacements</span><b id="totalHits">—</b></div>
+        <div class="kv"><span>APK size</span><b id="sizeInfo">—</b></div>
+        <button id="downloadBtn" class="primary wide">Download renamed APK</button>
+      </div>
+      <div class="result-card card">
+        <div class="eyebrow">VALIDATION</div>
+        <h3>Package checks</h3>
+        <div class="checkrow"><span>Manifest target found</span><b id="vManifest">—</b></div>
+        <div class="checkrow"><span>Old package still in manifest</span><b id="vOld">—</b></div>
+        <div class="checkrow"><span>APK v1 + v2 signature</span><b id="vSign">—</b></div>
+        <div class="warning"><strong>Demo signing key</strong><br>This build is signed with a public demo identity. Do not use it for production releases or updates. The final GitHub workflow should use your real release keystore.</div>
+      </div>
+    </section>
+
+    <section class="notes card">
+      <div class="eyebrow">WHAT THIS DEMO TESTS</div>
+      <div class="note-grid">
+        <div><b>Exact-length rename</b><p><code>pro</code> and <code>neo</code> are both 3 characters, so byte offsets remain stable for direct binary string replacement.</p></div>
+        <div><b>Rebuild + signing</b><p>The demo reconstructs the APK ZIP and creates JAR/v1 plus APK Signature Scheme v2 metadata.</p></div>
+        <div><b>Production next step</b><p>After you confirm the APK behaves correctly, the same transformation can be moved into your GitHub Actions build before artifact, release, and Telegram upload.</p></div>
+      </div>
+    </section>
+
+    <footer>Neo Package Rename Demo · no analytics · no server upload</footer>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

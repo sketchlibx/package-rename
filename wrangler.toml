@@ -1,3 +1,9 @@
-name = "neo-package-rename-demo"
-compatibility_date = "2026-10-01"
-pages_build_output_dir = "."
+# This repository is deployable as a Cloudflare Worker with static assets.
+# It intentionally uses a Worker name different from the Pages project name
+# so `npx wrangler deploy` does not collide with an existing Pages project.
+name = "neo-package-rename-demo-worker"
+compatibility_date = "2026-10-02"
+workers_dev = true
+
+[assets]
+directory = "./public"

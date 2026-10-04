@@ -1,0 +1,9 @@
+{
+  "name": "neo-package-rename-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "pages:deploy": "wrangler pages deploy public"
+  }
+}
