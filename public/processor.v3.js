@@ -169,7 +169,7 @@ function parseLocalMeta(bytes, localOffset) {
   return { name, extra, dataStart };
 }
 
-export async function readApk(file, onProgress = null) {
+export async function readApk(file) {
   const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
   const eocd = locateEocd(bytes);
   const entryCount = readU16(bytes, eocd + 10);
@@ -180,12 +180,6 @@ export async function readApk(file, onProgress = null) {
   const entries = [];
   let p = cdOffset;
   for (let i = 0; i < entryCount; i++) {
-    if (i === 0 || i % 128 === 0) {
-      try {
-        onProgress?.({ processedEntries: i, totalEntries: entryCount, percent: 8 + (i / Math.max(1, entryCount)) * 5, currentEntry: `central directory entry ${i + 1}` });
-      } catch (_) {}
-      await yieldToBrowser();
-    }
     if (readU32(bytes, p) !== 0x02014b50) throw new Error('Unsupported ZIP structure: bad central directory entry.');
     const versionMadeBy = readU16(bytes, p + 4);
     const versionNeeded = readU16(bytes, p + 6);
@@ -308,13 +302,6 @@ async function buildApk(entries, eocdComment) {
   return { bytes: concat(localBytes, centralBytes, eocd), outputMeta };
 }
 
-async function yieldToBrowser() {
-  // A microtask is not enough here: the browser may keep painting blocked
-  // while thousands of tiny ZIP entries are decoded in sequence. Force a
-  // real task boundary so progress/status updates are rendered immediately.
-  await new Promise(resolve => setTimeout(resolve, 0));
-}
-
 export async function renameApk(file, onProgress = null) {
   const progress = (stage, percent, detail = {}) => {
     try { onProgress?.({ stage, percent: Math.max(0, Math.min(100, Math.round(percent))), ...detail }); } catch (_) {}
@@ -322,14 +309,7 @@ export async function renameApk(file, onProgress = null) {
   if (!/\.apk$/i.test(file.name || '')) throw new Error('Please select an APK file.');
   if (file.size > 300 * 1024 * 1024) throw new Error('APK is larger than the 300 MB browser safety limit.');
   progress('Reading APK', 8, { message: 'Reading ZIP central directory…' });
-  const apk = await readApk(file, detail => {
-    progress('Reading APK', detail.percent, {
-      message: `Reading ZIP directory ${detail.processedEntries.toLocaleString()}/${detail.totalEntries.toLocaleString()}…`,
-      processedEntries: detail.processedEntries,
-      totalEntries: detail.totalEntries,
-      currentEntry: detail.currentEntry
-    });
-  });
+  const apk = await readApk(file);
   progress('APK analyzed', 14, { message: `${apk.entries.length.toLocaleString()} archive entries found.`, totalEntries: apk.entries.length });
   const variants = packageVariants();
   progress('Checking manifest', 18, { message: 'Checking AndroidManifest.xml for the source package…', currentEntry: 'AndroidManifest.xml' });
@@ -350,12 +330,9 @@ export async function renameApk(file, onProgress = null) {
 
   for (const e of apk.entries) {
     const scanPercent = 20 + (processedEntries / totalEntries) * 50;
-    if (scanPercent - lastProgressAt >= 0.25 || processedEntries === 0) {
+    if (scanPercent - lastProgressAt >= 0.5 || processedEntries === 0) {
       lastProgressAt = scanPercent;
-      progress('Scanning archive', scanPercent, { message: `Processing ${Math.min(processedEntries + 1, totalEntries).toLocaleString()}/${totalEntries.toLocaleString()} entries…`, processedEntries, totalEntries, currentEntry: e.name, changedCount, totalReplacements });
-      // Let the browser paint THIS update before doing the expensive work for
-      // the current entry. This is the important fix for the apparent 20% hang.
-      await yieldToBrowser();
+      progress('Scanning archive', scanPercent, { message: `Processing ${processedEntries.toLocaleString()}/${totalEntries.toLocaleString()} entries…`, processedEntries, totalEntries, currentEntry: e.name, changedCount, totalReplacements });
     }
     if (isSignatureEntry(e.name)) {
       signatureRemoved.push(e.name);
@@ -389,11 +366,8 @@ export async function renameApk(file, onProgress = null) {
       lastProgressAt = percent;
       progress('Scanning archive', percent, { message: `Scanning ${processedEntries.toLocaleString()}/${totalEntries.toLocaleString()} entries…`, processedEntries, totalEntries, currentEntry: e.name, changedCount, totalReplacements });
     }
-    // Yield frequently, not every 24 entries. Some APK entries can require
-    // decompression/recompression work that is large enough to make a 24-entry
-    // batch look frozen on mobile Chrome. A real task boundary after each
-    // completed entry keeps the progress bar visibly alive.
-    await yieldToBrowser();
+    // Give the browser a chance to paint progress updates during large APK scans.
+    if (processedEntries % 24 === 0) await new Promise(resolve => setTimeout(resolve, 0));
   }
 
   progress('Rebuilding APK', 72, { message: `Rebuilding archive with ${changedCount} changed entries…`, changedCount, totalReplacements });

@@ -47,8 +47,9 @@ function addLog(event) {
 }
 function updateProgress(event) {
   Object.assign(progressState, event);
-  const detail = event.currentEntry ? ` · ${event.currentEntry}` : '';
-  setStatus(event.stage, `${event.message || ''}${detail}`, event.percent);
+  // Keep the main status readable; the exact current entry is shown in the
+  // dedicated Current field and the Details panel.
+  setStatus(event.stage, event.message || '', event.percent);
   const last = progressState.logs.at(-1);
   if (!last || last.stage !== event.stage || Math.abs((last.percent || 0) - (event.percent || 0)) >= 2 || event.percent >= 100 || event.percent === 0) addLog(event);
   $('detailCurrent').textContent = event.currentEntry || '—';
@@ -79,7 +80,8 @@ async function processFile(file) {
   outputBlob = null;
   $('downloadBtn').disabled = true;
   resetDetails();
-  $('detailsBtn').classList.add('hidden');
+  // Details must remain available DURING processing, not only after it ends.
+  $('detailsBtn').classList.remove('hidden');
   updateProgress({ stage: 'Preparing', percent: 3, message: `Preparing ${file.name}…` });
   try {
     const res = await renameApk(file, updateProgress);

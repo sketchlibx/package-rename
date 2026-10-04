@@ -28,3 +28,7 @@ Build output directory: `public`
 Deploy command: leave empty for Git-integrated Pages.
 
 See `COMPATIBILITY_ANALYSIS.md` for the comparison-grounded design rationale.
+
+## Progress and Details
+
+The browser scan yields to the UI after each archive entry so mobile Chrome can repaint the progress bar continuously. The Details button is available while processing and shows the current entry, entry counters, changed entries, replacement count, and recent stage history.
