@@ -1,58 +1,28 @@
-# Neo Package Rename Demo — fixed Cloudflare deployment
+# Neo Package Rename Demo — v2
 
-Demo target:
+This demo is intentionally a **rename + archive-preservation tool**, not a signing service.
 
-`pro.sketchware` → `neo.sketchware`
+## What changed from v1
 
-## Why the previous Cloudflare deployment failed
+- Keeps unchanged ZIP entries' original compressed bytes.
+- Recompresses only entries that actually contain `pro.sketchware`.
+- Preserves ZIP metadata and extra fields instead of rebuilding every entry as uncompressed STORE data.
+- Removes only stale APK signing records (`META-INF/MANIFEST.MF`, `*.SF`, `*.RSA`, `*.DSA`, `*.EC`) so the output can be cleanly resigned.
+- Does **not** ship a private signing key.
+- Adds validation for old-package removal, target-package presence, signature-record cleanup, changed-entry count and size delta.
+- Includes an instructional MP4 and an animated GIF preview.
 
-The previous project executed:
+## Test workflow
 
-```bash
-npx wrangler deploy
-```
+1. Upload the real Sketchware Neo/Pro APK whose package is `pro.sketchware`.
+2. Download `*-neo-unsigned.apk`.
+3. Sign it with your own test/release key using MT Manager or Android `apksigner`.
+4. Install the signed APK and verify launch + key flows.
 
-but the repository had a **Pages-only** `pages_build_output_dir` configuration. Wrangler therefore looked for a Worker entry point/assets configuration and stopped with `Missing entry-point to Worker script or to assets directory`.
+## Cloudflare Pages
 
-This version removes that mismatch.
+Build command: `exit 0`
+Build output directory: `public`
+Deploy command: leave empty for Git-integrated Pages.
 
-## Mode A — works with the current `npx wrangler deploy` build setting
-
-This ZIP is configured as a **Cloudflare Worker with Static Assets**. The site files are under `public/` and `wrangler.toml` defines the asset directory.
-
-Use:
-
-```bash
-npx wrangler deploy
-```
-
-No Worker entry-point file is required because Wrangler is configured with `[assets] directory = "./public"`.
-
-The Worker name is intentionally `neo-package-rename-demo-worker`, so it does not collide with a separate Cloudflare Pages project called `package-rename`.
-
-Cloudflare documentation confirms that Workers Static Assets are configured through `assets.directory` and deployed with `wrangler deploy`.
-
-## Mode B — normal Cloudflare Pages Git integration
-
-If this repository is actually attached to a **Pages** project, do not use a deploy command.
-
-Cloudflare Pages Git integration should use:
-
-- Build command: `exit 0`
-- Build output directory: `public`
-- Deploy command: **empty / not set**
-
-Pages automatically publishes the build output after the build succeeds.
-
-## Demo behavior
-
-- APK is processed entirely in the browser.
-- Exact source package is required: `pro.sketchware`.
-- Exact-length package references are changed to `neo.sketchware`.
-- Existing `META-INF` signatures are discarded and demo v1/v2 signing structures are rebuilt.
-- The result is re-read as a ZIP/APK and validated before download.
-- The demo signing key is public and must never be used for production releases.
-
-## Important production limitation
-
-This browser demo is intentionally a proof-of-concept for your package transformation. The production GitHub workflow should perform the transformation with Android build/signing tools after Gradle produces the APK, then verify the final package and sign it using your real release keystore before creating a Release or sending the artifact to Telegram.
+See `COMPATIBILITY_ANALYSIS.md` for the comparison-grounded design rationale.

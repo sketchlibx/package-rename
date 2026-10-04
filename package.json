@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deploy": "wrangler deploy",
-    "pages:deploy": "wrangler pages deploy public"
+    "check": "node --check public/app.js && node --check public/processor.js"
   }
 }

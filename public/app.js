@@ -6,58 +6,96 @@ const drop = $('dropzone');
 const status = $('statusCard');
 const result = $('resultGrid');
 let outputBlob = null;
-let outputName = 'neo-sketchware.apk';
+let outputName = 'neo-sketchware-unsigned.apk';
 
 $('pickBtn').onclick = () => input.click();
 input.onchange = () => input.files[0] && processFile(input.files[0]);
-['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault();drop.classList.add('drag');}));
-['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault();drop.classList.remove('drag');}));
-drop.addEventListener('drop', ev => {const f=ev.dataTransfer.files[0];if(f)processFile(f);});
-$('downloadBtn').onclick = () => { if(!outputBlob)return; const a=document.createElement('a');a.href=URL.createObjectURL(outputBlob);a.download=outputName;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000); };
+['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('drag'); }));
+['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('drag'); }));
+drop.addEventListener('drop', ev => { const f = ev.dataTransfer.files[0]; if (f) processFile(f); });
+$('downloadBtn').onclick = () => {
+  if (!outputBlob) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(outputBlob);
+  a.download = outputName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
 
-function setStatus(title,text,pct){
+function setStatus(title, text, pct, mode='ok') {
   status.classList.remove('hidden');
-  $('statusDot').style.background = pct === 0 ? '#f0a5a5' : 'var(--primary)';
-  $('statusTitle').textContent=title;
-  $('statusText').textContent=text;
-  $('statusPct').textContent=pct?`${pct}%`:'';
-  $('progressBar').style.width=`${pct||0}%`;
+  $('statusDot').className = `dot ${mode}`;
+  $('statusTitle').textContent = title;
+  $('statusText').textContent = text;
+  $('statusPct').textContent = pct != null ? `${pct}%` : '';
+  $('progressBar').style.width = `${pct || 0}%`;
 }
-const mb=n=>`${(n/1024/1024).toFixed(1)} MB`;
+const mb = n => `${(n / 1024 / 1024).toFixed(1)} MB`;
+const pct = n => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 
-async function processFile(file){
+async function processFile(file) {
   result.classList.add('hidden');
   outputBlob = null;
   $('downloadBtn').disabled = true;
-  try{
-    setStatus('Reading APK','Opening ZIP and locating AndroidManifest.xml…',12);
-    if(!/\.apk$/i.test(file.name)) throw new Error('Please select an APK file.');
-    if(file.size>250*1024*1024) throw new Error('For this demo, APKs larger than 250 MB are blocked to avoid browser memory exhaustion.');
-    $('statusDot').style.background='var(--primary)';
-    setStatus('Analyzing package','Checking exact source package before changing anything…',27);
-    await new Promise(r=>setTimeout(r,20));
-    setStatus('Renaming package','Patching exact package references and rebuilding APK…',54);
-    const res=await renameApk(file);
-    setStatus('Signing output','Creating v1 + v2 signatures and final APK…',88);
-    await new Promise(r=>setTimeout(r,20));
-    outputBlob=new Blob([res.bytes],{type:'application/vnd.android.package-archive'});
-    outputName=res.outputName;
-    $('origPkg').textContent=res.originalPackage;$('targetPkg').textContent=res.targetPackage;$('manifestHits').textContent=res.manifestReplacements;$('totalHits').textContent=res.totalReplacements;$('sizeInfo').textContent=`${mb(res.inputSize)} → ${mb(res.outputSize)}`;
-    $('vManifest').textContent=res.validation.manifestTargetPresent?'PASS':'FAIL';
-    $('vOld').textContent=res.validation.sourceExactStillPresentInOutput?'FOUND':'NOT FOUND';
-    $('vOld').style.color=res.validation.sourceExactStillPresentInOutput?'#f4a6a6':'var(--success)';
-    $('vSign').textContent=res.validation.v1AndV2?'STRUCTURE OK':'FAIL';
-    $('resultTitle').textContent='APK generated successfully';
+  setStatus('Reading APK', 'Reading ZIP central directory without unpacking the entire APK.', 10);
+  try {
+    const res = await renameApk(file);
+    setStatus('Package references replaced', `${res.changedFileCount} archive entries changed; ${res.preservedFileCount} preserved.`, 72);
+    outputBlob = new Blob([res.bytes], { type: 'application/vnd.android.package-archive' });
+    outputName = res.outputName;
+
+    $('origPkg').textContent = res.originalPackage;
+    $('targetPkg').textContent = res.targetPackage;
+    $('manifestHits').textContent = res.manifestReplacements;
+    $('totalHits').textContent = res.totalReplacements;
+    $('sizeInfo').textContent = `${mb(res.inputSize)} → ${mb(res.outputSize)} (${pct(res.validation.sizeDeltaPercent)})`;
+    $('changedCount').textContent = res.changedFileCount;
+    $('preservedCount').textContent = res.preservedFileCount;
+    $('removedSignatures').textContent = res.signatureRemoved.length || '0';
+    $('vManifest').textContent = res.validation.manifestTargetPresent ? 'PASS' : 'FAIL';
+    $('vOld').textContent = res.validation.sourceGone ? 'NOT FOUND' : 'FOUND';
+    $('vOld').className = res.validation.sourceGone ? 'pass' : 'fail';
+    $('vMeta').textContent = res.validation.signatureEntriesRemoved ? 'CLEAN' : 'FAIL';
+    $('vSize').textContent = Math.abs(res.validation.sizeDeltaPercent) < 5 ? 'NORMAL' : 'CHECK';
+    $('changedFiles').textContent = res.changedFiles.map(x => x.name).join(', ');
+    $('resultTitle').textContent = 'Rename complete — unsigned APK';
     result.classList.remove('hidden');
     $('downloadBtn').disabled = false;
-    setStatus('Complete','The transformed APK is ready for download.',100);
-  }catch(e){
+    setStatus('Complete', 'Download the unsigned APK, then sign it with your own signing key/tool before installation.', 100);
+  } catch (e) {
     outputBlob = null;
     $('downloadBtn').disabled = true;
-    $('statusDot').style.background='#f0a5a5';
-    setStatus('Stopped',e?.message||String(e),0);
+    setStatus('Stopped safely', e?.message || String(e), 0, 'error');
   }
 }
 
-// Keep the UI explicit about the fixed transformation.
-$('origPkg').textContent=SOURCE_PACKAGE;$('targetPkg').textContent=TARGET_PACKAGE;
+$('origPkg').textContent = SOURCE_PACKAGE;
+$('targetPkg').textContent = TARGET_PACKAGE;
+
+function previewMode() {
+  const params = new URLSearchParams(location.search);
+  const step = params.get('step');
+  if (!step) return;
+  if (step === 'upload') {
+    setStatus('Ready for APK', 'Select the Sketchware Pro APK with source package pro.sketchware.', 18);
+  } else if (step === 'processing') {
+    setStatus('Renaming safely', 'Preserving compression and archive metadata while replacing exact package bytes.', 62);
+  } else if (step === 'result') {
+    $('origPkg').textContent = SOURCE_PACKAGE;
+    $('targetPkg').textContent = TARGET_PACKAGE;
+    $('manifestHits').textContent = '3';
+    $('totalHits').textContent = '8';
+    $('sizeInfo').textContent = '130.2 MB → 130.1 MB (-0.08%)';
+    $('changedCount').textContent = '7';
+    $('preservedCount').textContent = '4185';
+    $('removedSignatures').textContent = '2';
+    $('vManifest').textContent = 'PASS';
+    $('vOld').textContent = 'NOT FOUND';
+    $('vMeta').textContent = 'CLEAN';
+    $('vSize').textContent = 'NORMAL';
+    $('changedFiles').textContent = 'AndroidManifest.xml, classes6.dex, classes16.dex, resources.arsc, res/K51.xml, res/d21.xml, assets/debug/SketchLogger.java';
+    result.classList.remove('hidden');
+    setStatus('Complete', 'Unsigned APK ready. Sign with your own release/test key, then install.', 100);
+  }
+}
+previewMode();

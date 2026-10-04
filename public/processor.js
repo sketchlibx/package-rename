@@ -1,18 +1,20 @@
-import {
-  DEMO_PRIVATE_KEY_DER_B64,
-  DEMO_CERT_DER_B64,
-  DEMO_SPKI_DER_B64,
-  DEMO_ISSUER_DER_B64,
-  DEMO_SERIAL_HEX,
-} from './signing-key.js';
-
-export const SOURCE_PACKAGE = 'pro.sketchware';
-export const TARGET_PACKAGE = 'neo.sketchware';
-const APK_V2_ID = 0x7109871a;
-const CHUNK = 1024 * 1024;
-
-const b64 = (s) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const SOURCE_PACKAGE = 'pro.sketchware';
+const TARGET_PACKAGE = 'neo.sketchware';
 const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+const SIG_EXT = /\.(RSA|DSA|EC|SF)$/i;
+const SIGNATURE_NAMES = new Set(['META-INF/MANIFEST.MF']);
+
+function readU16(bytes, off) {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(off - bytes.byteOffset, true);
+}
+function readU32(bytes, off) {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(off - bytes.byteOffset, true);
+}
+function writeU16(out, off, value) { new DataView(out.buffer).setUint16(off, value & 0xffff, true); }
+function writeU32(out, off, value) { new DataView(out.buffer).setUint32(off, value >>> 0, true); }
+
 const concat = (...parts) => {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
@@ -20,327 +22,373 @@ const concat = (...parts) => {
   for (const p of parts) { out.set(p, at); at += p.length; }
   return out;
 };
-function u16le(n){ const a=new Uint8Array(2); new DataView(a.buffer).setUint16(0,n,true); return a; }
-function u32le(n){ const a=new Uint8Array(4); new DataView(a.buffer).setUint32(0,n>>>0,true); return a; }
-function u64le(n){
-  const a=new Uint8Array(8); const v=new DataView(a.buffer);
-  const x=BigInt(n); v.setUint32(0, Number(x & 0xffffffffn), true); v.setUint32(4, Number((x >> 32n) & 0xffffffffn), true); return a;
-}
-function readU16(a,o){ return new DataView(a.buffer,a.byteOffset,a.byteLength).getUint16(o-a.byteOffset,true); }
-function readU32(a,o){ return new DataView(a.buffer,a.byteOffset,a.byteLength).getUint32(o-a.byteOffset,true); }
-function readU64(a,o){
-  const v=new DataView(a.buffer,a.byteOffset); return BigInt(v.getUint32(o-a.byteOffset,true)) | (BigInt(v.getUint32(o-a.byteOffset+4,true))<<32n);
-}
-const sha256 = async (data) => new Uint8Array(await crypto.subtle.digest('SHA-256', data));
-const hex = (bytes) => [...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');
-const b64encode = (bytes) => btoa(String.fromCharCode(...bytes));
 
-function findBytes(hay, needle){
-  outer: for(let i=0;i<=hay.length-needle.length;i++){
-    for(let j=0;j<needle.length;j++) if(hay[i+j]!==needle[j]) continue outer;
-    return i;
-  }
-  return -1;
-}
-function countBytes(data, needle){
-  let count=0, start=0;
-  while(true){ const i=findBytes(data.subarray(start),needle); if(i<0) break; count++; start += i + Math.max(1,needle.length); }
-  return count;
-}
-function replaceAllBytes(data, from, to){
-  if(from.length!==to.length) throw new Error('Replacement must keep byte length identical');
-  const out=new Uint8Array(data);
-  let at=0,count=0;
-  while((at=findBytes(out,from))!==-1){
-    out.set(to,at); count++;
-    // prevent replacing the same location again
-    const shifted=out.subarray(at+to.length);
-    const next=findBytes(shifted,from);
-    if(next===-1) break;
-    at=at+to.length+next;
-  }
-  return {data:out,count};
-}
-function replacePackageBytes(data){
-  const utf8From=enc.encode(SOURCE_PACKAGE), utf8To=enc.encode(TARGET_PACKAGE);
-  const utf16From=new Uint8Array(utf8From.length*2), utf16To=new Uint8Array(utf8To.length*2);
-  for(let i=0;i<utf8From.length;i++){ utf16From[i*2]=utf8From[i]; utf16To[i*2]=utf8To[i]; }
-  let r=replaceAllBytes(data,utf8From,utf8To);
-  const r2=replaceAllBytes(r.data,utf16From,utf16To);
-  return {data:r2.data,count:r.count+r2.count};
-}
-
-async function inflateRaw(bytes){
-  if(typeof DecompressionStream==='undefined') throw new Error('This browser does not support native DEFLATE decoding. Use a modern Chrome/Edge/Safari browser.');
-  const ds=new DecompressionStream('deflate-raw');
-  const stream=new Blob([bytes]).stream().pipeThrough(ds);
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-function locateEocd(bytes){
-  const start=Math.max(0,bytes.length-0x10016);
-  for(let i=bytes.length-22;i>=start;i--){
-    if(readU32(bytes,i)===0x06054b50){ return i; }
+function locateEocd(bytes) {
+  const start = Math.max(0, bytes.length - 0x10016);
+  for (let i = bytes.length - 22; i >= start; i--) {
+    if (readU32(bytes, i) === 0x06054b50) return i;
   }
   throw new Error('Invalid APK/ZIP: End Of Central Directory was not found.');
 }
 
-export async function readApk(input){
-  const bytes=input instanceof Uint8Array?input:new Uint8Array(await input.arrayBuffer());
-  const eocd=locateEocd(bytes);
-  const count=readU16(bytes,eocd+10), cdSize=readU32(bytes,eocd+12), cdOffset=readU32(bytes,eocd+16);
-  if(cdOffset+cdSize>bytes.length) throw new Error('Invalid ZIP central directory.');
-  const entries=[]; let p=cdOffset;
-  for(let i=0;i<count;i++){
-    if(readU32(bytes,p)!==0x02014b50) throw new Error('Unsupported ZIP structure: bad central directory entry.');
-    const method=readU16(bytes,p+10), crc=readU32(bytes,p+16), csize=readU32(bytes,p+20), usize=readU32(bytes,p+24);
-    const nameLen=readU16(bytes,p+28), extraLen=readU16(bytes,p+30), commentLen=readU16(bytes,p+32), localOffset=readU32(bytes,p+42);
-    const name=new TextDecoder().decode(bytes.subarray(p+46,p+46+nameLen));
-    if(readU32(bytes,localOffset)!==0x04034b50) throw new Error(`Invalid local ZIP header for ${name}`);
-    const lfNameLen=readU16(bytes,localOffset+26), lfExtraLen=readU16(bytes,localOffset+28);
-    const dataStart=localOffset+30+lfNameLen+lfExtraLen;
-    const compressed=bytes.subarray(dataStart,dataStart+csize);
-    let data;
-    if(method===0) data=new Uint8Array(compressed);
-    else if(method===8) data=await inflateRaw(compressed);
-    else throw new Error(`Unsupported compression method ${method} for ${name}`);
-    if(data.length!==usize) throw new Error(`Corrupt entry ${name}: size mismatch.`);
-    entries.push({name,data,crc,method,compressedSize:csize,uncompressedSize:usize});
-    p+=46+nameLen+extraLen+commentLen;
+function contains(hay, needle) {
+  outer: for (let i = 0; i <= hay.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (hay[i + j] !== needle[j]) continue outer;
+    }
+    return true;
   }
-  const manifest=entries.find(e=>e.name==='AndroidManifest.xml');
-  if(!manifest) throw new Error('AndroidManifest.xml is missing.');
-  return {entries, originalBytes:bytes, manifest};
+  return false;
 }
 
-export function patchEntries(entries){
-  let total=0;
-  const patched=entries.map(e=>{
-    if(e.name.startsWith('META-INF/')) return e;
-    const r=replacePackageBytes(e.data);
-    total+=r.count;
-    return {...e,data:r.data};
-  });
-  return {entries:patched,totalReplacements:total};
+function replaceAllSameLength(data, from, to) {
+  if (from.length !== to.length) throw new Error('Package strings must be equal length.');
+  const out = new Uint8Array(data);
+  let count = 0;
+  for (let i = 0; i <= out.length - from.length; i++) {
+    let ok = true;
+    for (let j = 0; j < from.length; j++) if (out[i + j] !== from[j]) { ok = false; break; }
+    if (!ok) continue;
+    out.set(to, i);
+    count++;
+    i += from.length - 1;
+  }
+  return { data: out, count };
 }
 
-function crc32(data){
-  let crc=0xffffffff;
-  for(const b of data){
+function packageVariants() {
+  const from8 = enc.encode(SOURCE_PACKAGE);
+  const to8 = enc.encode(TARGET_PACKAGE);
+  const from16 = new Uint8Array(from8.length * 2);
+  const to16 = new Uint8Array(to8.length * 2);
+  for (let i = 0; i < from8.length; i++) {
+    from16[i * 2] = from8[i];
+    to16[i * 2] = to8[i];
+  }
+  return { from8, to8, from16, to16 };
+}
+
+async function inflateRaw(data) {
+  const ds = new DecompressionStream('deflate-raw');
+  return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(ds)).arrayBuffer());
+}
+
+async function deflateRaw(data) {
+  const cs = new CompressionStream('deflate-raw');
+  const writer = cs.writable.getWriter();
+  await writer.write(data);
+  await writer.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
+
+function isSignatureEntry(name) {
+  if (!name.startsWith('META-INF/')) return false;
+  const upper = name.toUpperCase();
+  return SIGNATURE_NAMES.has(upper) || SIG_EXT.test(name);
+}
+
+function crc32(data) {
+  let crc = 0xffffffff;
+  for (const b of data) {
     crc ^= b;
-    for(let k=0;k<8;k++) crc=(crc>>>1)^((crc&1)?0xedb88320:0);
+    for (let k = 0; k < 8; k++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
   }
-  return (crc^0xffffffff)>>>0;
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
-function localHeader(name,data,crc){
-  const n=enc.encode(name);
-  return concat(enc.encode(''),new Uint8Array(new ArrayBuffer(30)),n,data);
-}
-function buildLocalEntry(name,data,crc){
-  const n=enc.encode(name); const h=new Uint8Array(30); const v=new DataView(h.buffer);
-  v.setUint32(0,0x04034b50,true); v.setUint16(4,20,true); v.setUint16(6,0,true); v.setUint16(8,0,true);
-  v.setUint16(10,0,true); v.setUint16(12,0,true); v.setUint32(14,crc,true); v.setUint32(18,data.length,true); v.setUint32(22,data.length,true);
-  v.setUint16(26,n.length,true); v.setUint16(28,0,true); return concat(h,n,data);
-}
-function buildCentralEntry(name,data,crc,offset){
-  const n=enc.encode(name); const h=new Uint8Array(46); const v=new DataView(h.buffer);
-  v.setUint32(0,0x02014b50,true); v.setUint16(4,20,true); v.setUint16(6,20,true); v.setUint16(8,0,true); v.setUint16(10,0,true);
-  v.setUint16(12,0,true); v.setUint16(14,0,true); v.setUint32(16,crc,true); v.setUint32(20,data.length,true); v.setUint32(24,data.length,true);
-  v.setUint16(28,n.length,true); v.setUint16(30,0,true); v.setUint16(32,0,true); v.setUint16(34,0,true); v.setUint16(36,0,true); v.setUint32(38,0,true); v.setUint32(42,offset,true);
-  return concat(h,n);
-}
-function buildEocd(count,cdSize,cdOffset){
-  const h=new Uint8Array(22),v=new DataView(h.buffer); v.setUint32(0,0x06054b50,true); v.setUint16(4,0,true);v.setUint16(6,0,true);v.setUint16(8,count,true);v.setUint16(10,count,true);v.setUint32(12,cdSize,true);v.setUint32(16,cdOffset,true);v.setUint16(20,0,true);return h;
-}
-
-function derLen(n){
-  if(n<128) return Uint8Array.of(n);
-  const a=[]; let x=n; while(x){a.unshift(x&255);x>>>=8;} return Uint8Array.of(0x80|a.length,...a);
-}
-function derTLV(tag,value){return concat(Uint8Array.of(tag),derLen(value.length),value);}
-function derContent(tlv){ const lenByte=tlv[1]; const n=(lenByte&0x80)?(lenByte&0x7f):0; const h=1+(n?n+1:1); return tlv.subarray(h); }
-const derSeq=v=>derTLV(0x30,v), derSet=v=>derTLV(0x31,v), derOct=v=>derTLV(0x04,v), derNull=()=>Uint8Array.of(0x05,0x00);
-function derOid(oid){
-  const a=oid.split('.').map(Number); const out=[40*a[0]+a[1]];
-  for(let i=2;i<a.length;i++){let x=a[i],stack=[x&0x7f];x>>>=7;while(x){stack.unshift((x&0x7f)|0x80);x>>>=7;}out.push(...stack);} return derTLV(0x06,Uint8Array.from(out));
-}
-function derIntFromHex(hexv){
-  let a=Uint8Array.from(hexv.match(/../g).map(x=>parseInt(x,16))); if(a[0]&0x80) a=concat(Uint8Array.of(0),a); return derTLV(0x02,a);
-}
-function algIdSha256(){return derSeq(concat(derOid('2.16.840.1.101.3.4.2.1'),derNull()));}
-function algIdRsa(){return derSeq(concat(derOid('1.2.840.113549.1.1.1'),derNull()));}
-
-async function importPrivateKey(){
-  return crypto.subtle.importKey('pkcs8',b64(DEMO_PRIVATE_KEY_DER_B64),{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['sign']);
+function makeLocalHeader(e, compressedSize, uncompressedSize, crc, extraOverride = null) {
+  const name = enc.encode(e.name);
+  const extra = extraOverride ?? e.localExtra;
+  const h = new Uint8Array(30 + name.length + extra.length);
+  writeU32(h, 0, 0x04034b50);
+  writeU16(h, 4, e.versionNeeded);
+  // bit 3 (data descriptor) is cleared because we write exact sizes in the header.
+  writeU16(h, 6, e.flags & ~0x0008);
+  writeU16(h, 8, e.method);
+  writeU16(h, 10, e.modTime);
+  writeU16(h, 12, e.modDate);
+  writeU32(h, 14, crc);
+  writeU32(h, 18, compressedSize);
+  writeU32(h, 22, uncompressedSize);
+  writeU16(h, 26, name.length);
+  writeU16(h, 28, extra.length);
+  h.set(name, 30);
+  h.set(extra, 30 + name.length);
+  return h;
 }
 
-async function rsaSha256(key,data){return new Uint8Array(await crypto.subtle.sign({name:'RSASSA-PKCS1-v1_5'},key,data));}
-
-function cmsAttribute(oid,valueDer){return derSeq(concat(derOid(oid),derSet(valueDer)));}
-async function makeCmsSignature(sfBytes,key){
-  const md=await sha256(sfBytes);
-  const attrs=[
-    cmsAttribute('1.2.840.113549.1.9.3',derOid('1.2.840.113549.1.7.1')),
-    cmsAttribute('1.2.840.113549.1.9.4',derOct(md)),
-  ].sort((a,b)=>{const aa=hex(a),bb=hex(b);return aa<bb?-1:aa>bb?1:0;});
-  const attrsSet=derSet(concat(...attrs));
-  const signature=await rsaSha256(key,attrsSet);
-  const issuer=b64(DEMO_ISSUER_DER_B64), serial=derIntFromHex(DEMO_SERIAL_HEX);
-  const signerInfo=derSeq(concat(
-    derIntFromHex('01'),
-    derSeq(concat(issuer,serial)),
-    algIdSha256(),
-    derTLV(0xa0,derContent(attrsSet)),
-    algIdRsa(),
-    derOct(signature)
-  ));
-  const signedData=derSeq(concat(
-    derIntFromHex('01'),
-    derSet(algIdSha256()),
-    derSeq(derOid('1.2.840.113549.1.7.1')),
-    derTLV(0xa0,derContent(derSeq(b64(DEMO_CERT_DER_B64)))),
-    derSet(signerInfo)
-  ));
-  return derSeq(concat(derOid('1.2.840.113549.1.7.2'),derTLV(0xa0,signedData)));
+function makeCentralHeader(e, compressedSize, uncompressedSize, crc, localOffset) {
+  const name = enc.encode(e.name);
+  const extra = e.centralExtra;
+  const comment = e.comment;
+  const h = new Uint8Array(46 + name.length + extra.length + comment.length);
+  writeU32(h, 0, 0x02014b50);
+  writeU16(h, 4, e.versionMadeBy);
+  writeU16(h, 6, e.versionNeeded);
+  writeU16(h, 8, e.flags & ~0x0008);
+  writeU16(h, 10, e.method);
+  writeU16(h, 12, e.modTime);
+  writeU16(h, 14, e.modDate);
+  writeU32(h, 16, crc);
+  writeU32(h, 20, compressedSize);
+  writeU32(h, 24, uncompressedSize);
+  writeU16(h, 28, name.length);
+  writeU16(h, 30, extra.length);
+  writeU16(h, 32, comment.length);
+  writeU16(h, 34, e.diskStart);
+  writeU16(h, 36, e.internalAttrs);
+  writeU32(h, 38, e.externalAttrs);
+  writeU32(h, 42, localOffset);
+  h.set(name, 46);
+  h.set(extra, 46 + name.length);
+  h.set(comment, 46 + name.length + extra.length);
+  return h;
 }
 
-function contentDigestPrefixDigest(digests){return concat(Uint8Array.of(0x5a),u32le(digests.length/32),digests);}
-async function computeChunkedDigest(segments){
-  const chunks=[];
-  for(const seg of segments){
-    for(let p=0;p<seg.length;p+=CHUNK){
-      const chunk=seg.subarray(p,Math.min(seg.length,p+CHUNK));
-      chunks.push(await sha256(concat(Uint8Array.of(0xa5),u32le(chunk.length),chunk)));
+function makeEocd(entryCount, cdSize, cdOffset, comment = new Uint8Array()) {
+  const h = new Uint8Array(22 + comment.length);
+  writeU32(h, 0, 0x06054b50);
+  writeU16(h, 4, 0);
+  writeU16(h, 6, 0);
+  writeU16(h, 8, entryCount);
+  writeU16(h, 10, entryCount);
+  writeU32(h, 12, cdSize);
+  writeU32(h, 16, cdOffset);
+  writeU16(h, 20, comment.length);
+  h.set(comment, 22);
+  return h;
+}
+
+function parseLocalMeta(bytes, localOffset) {
+  if (readU32(bytes, localOffset) !== 0x04034b50) throw new Error('Invalid local header.');
+  const nameLen = readU16(bytes, localOffset + 26);
+  const extraLen = readU16(bytes, localOffset + 28);
+  const name = bytes.subarray(localOffset + 30, localOffset + 30 + nameLen);
+  const extra = bytes.subarray(localOffset + 30 + nameLen, localOffset + 30 + nameLen + extraLen);
+  const dataStart = localOffset + 30 + nameLen + extraLen;
+  return { name, extra, dataStart };
+}
+
+export async function readApk(file) {
+  const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
+  const eocd = locateEocd(bytes);
+  const entryCount = readU16(bytes, eocd + 10);
+  const cdSize = readU32(bytes, eocd + 12);
+  const cdOffset = readU32(bytes, eocd + 16);
+  if (cdOffset + cdSize > bytes.length) throw new Error('Invalid ZIP central directory bounds.');
+  if (entryCount === 0xffff || cdOffset === 0xffffffff || cdSize === 0xffffffff) throw new Error('ZIP64 APKs are not supported by this browser demo.');
+  const entries = [];
+  let p = cdOffset;
+  for (let i = 0; i < entryCount; i++) {
+    if (readU32(bytes, p) !== 0x02014b50) throw new Error('Unsupported ZIP structure: bad central directory entry.');
+    const versionMadeBy = readU16(bytes, p + 4);
+    const versionNeeded = readU16(bytes, p + 6);
+    const flags = readU16(bytes, p + 8);
+    const method = readU16(bytes, p + 10);
+    const modTime = readU16(bytes, p + 12);
+    const modDate = readU16(bytes, p + 14);
+    const crc = readU32(bytes, p + 16);
+    const compressedSize = readU32(bytes, p + 20);
+    const uncompressedSize = readU32(bytes, p + 24);
+    const nameLen = readU16(bytes, p + 28);
+    const extraLen = readU16(bytes, p + 30);
+    const commentLen = readU16(bytes, p + 32);
+    const diskStart = readU16(bytes, p + 34);
+    const internalAttrs = readU16(bytes, p + 36);
+    const externalAttrs = readU32(bytes, p + 38);
+    const localOffset = readU32(bytes, p + 42);
+    if (localOffset === 0xffffffff || compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) throw new Error('ZIP64 entry found.');
+    const nameBytes = bytes.subarray(p + 46, p + 46 + nameLen);
+    const name = dec.decode(nameBytes);
+    const centralExtra = bytes.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen);
+    const comment = bytes.subarray(p + 46 + nameLen + extraLen, p + 46 + nameLen + extraLen + commentLen);
+    const local = parseLocalMeta(bytes, localOffset);
+    const compressed = bytes.subarray(local.dataStart, local.dataStart + compressedSize);
+    if (local.dataStart + compressedSize > bytes.length) throw new Error(`Corrupt entry ${name}: data extends past file.`);
+    entries.push({
+      name, versionMadeBy, versionNeeded, flags, method, modTime, modDate, crc,
+      compressedSize, uncompressedSize, diskStart, internalAttrs, externalAttrs,
+      localOffset, localName: new Uint8Array(local.name), localExtra: new Uint8Array(local.extra),
+      centralExtra: new Uint8Array(centralExtra), comment: new Uint8Array(comment),
+      compressed: new Uint8Array(compressed),
+    });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  const manifest = entries.find(e => e.name === 'AndroidManifest.xml');
+  if (!manifest) throw new Error('AndroidManifest.xml is missing.');
+  return { bytes, eocd, eocdComment: new Uint8Array(bytes.subarray(eocd + 22, eocd + 22 + readU16(bytes, eocd + 20))), cdOffset, entries, manifest };
+}
+
+async function decodeEntry(e) {
+  if (e.method === 0) return new Uint8Array(e.compressed);
+  if (e.method === 8) return await inflateRaw(e.compressed);
+  throw new Error(`Unsupported compression method ${e.method} in ${e.name}.`);
+}
+
+function patchData(data, variants) {
+  let out = new Uint8Array(data);
+  let count = 0;
+  const r8 = replaceAllSameLength(out, variants.from8, variants.to8);
+  out = r8.data; count += r8.count;
+  const r16 = replaceAllSameLength(out, variants.from16, variants.to16);
+  out = r16.data; count += r16.count;
+  return { data: out, count };
+}
+
+function hasZipAlignField(extra) {
+  // APK/zipalign padding field is commonly stored as header id 0xD935.
+  for (let p = 0; p + 4 <= extra.length;) {
+    const id = extra[p] | (extra[p + 1] << 8);
+    const len = extra[p + 2] | (extra[p + 3] << 8);
+    if (id === 0xD935) return true;
+    p += 4 + len;
+  }
+  return false;
+}
+
+function padLocalExtraForAlignment(extra, dataOffset, alignment = 4) {
+  const remainder = dataOffset % alignment;
+  if (remainder === 0) return extra;
+  const needed = alignment - remainder;
+  // Preserve existing extra fields; append a standard padding field.
+  const fieldLen = needed;
+  if (fieldLen > 0xffff) return extra;
+  const field = new Uint8Array(4 + fieldLen);
+  writeU16(field, 0, 0xD935);
+  writeU16(field, 2, fieldLen);
+  return concat(extra, field);
+}
+
+async function buildApk(entries, eocdComment) {
+  const localParts = [];
+  const centralEntries = [];
+  let offset = 0;
+  const outputMeta = [];
+
+  for (const e of entries) {
+    let localExtra = e.localExtra;
+    let compressed = e.compressed;
+    let crc = e.crc;
+    let uncompressedSize = e.uncompressedSize;
+    let compressedSize = e.compressedSize;
+
+    // Re-align stored native libraries if an upstream edited entry changed offsets.
+    if (e.method === 0 && e.name.startsWith('lib/')) localExtra = padLocalExtraForAlignment(localExtra, offset + 30 + enc.encode(e.name).length + localExtra.length);
+
+    const localHeader = makeLocalHeader(e, compressedSize, uncompressedSize, crc, localExtra);
+    const localDataOffset = offset + localHeader.length;
+    if (e.method === 0 && e.name.startsWith('lib/') && localDataOffset % 4 !== 0) {
+      localExtra = padLocalExtraForAlignment(localExtra, offset + 30 + enc.encode(e.name).length + localExtra.length);
+      compressedSize = compressed.length;
+      uncompressedSize = e.uncompressedSize;
+      crc = e.crc;
+    }
+    const finalLocalHeader = makeLocalHeader(e, compressedSize, uncompressedSize, crc, localExtra);
+    const local = concat(finalLocalHeader, compressed);
+    localParts.push(local);
+    centralEntries.push({ e, compressed, crc, compressedSize, uncompressedSize, localOffset: offset });
+    outputMeta.push({ name: e.name, compressedBytesPreserved: compressed === e.compressed });
+    offset += local.length;
+  }
+
+  const localBytes = concat(...localParts);
+  const centralParts = [];
+  let cdOffset = localBytes.length;
+  for (const item of centralEntries) {
+    centralParts.push(makeCentralHeader(item.e, item.compressedSize, item.uncompressedSize, item.crc, item.localOffset));
+  }
+  const centralBytes = concat(...centralParts);
+  const eocd = makeEocd(centralEntries.length, centralBytes.length, cdOffset, eocdComment);
+  return { bytes: concat(localBytes, centralBytes, eocd), outputMeta };
+}
+
+export async function renameApk(file) {
+  if (!/\.apk$/i.test(file.name || '')) throw new Error('Please select an APK file.');
+  if (file.size > 300 * 1024 * 1024) throw new Error('APK is larger than the 300 MB browser safety limit.');
+  const apk = await readApk(file);
+  const variants = packageVariants();
+  const manifest = await decodeEntry(apk.manifest);
+  const manifestResult = patchData(manifest, variants);
+  if (manifestResult.count === 0) throw new Error(`Exact package ${SOURCE_PACKAGE} was not found in AndroidManifest.xml.`);
+
+  const processed = [];
+  let totalReplacements = 0;
+  let changedFiles = [];
+  let signatureRemoved = [];
+  let unchangedCount = 0;
+  let changedCount = 0;
+
+  for (const e of apk.entries) {
+    if (isSignatureEntry(e.name)) {
+      signatureRemoved.push(e.name);
+      continue;
+    }
+    const data = await decodeEntry(e);
+    const patched = patchData(data, variants);
+    if (patched.count > 0) {
+      const newData = patched.data;
+      let newCompressed = e.compressed;
+      if (e.method === 0) newCompressed = newData;
+      else if (e.method === 8) newCompressed = await deflateRaw(newData);
+      else throw new Error(`Unsupported compression method ${e.method} for changed entry ${e.name}.`);
+      processed.push({ ...e, compressed: newCompressed, compressedSize: newCompressed.length, uncompressedSize: newData.length, crc: crc32(newData) });
+      totalReplacements += patched.count;
+      changedFiles.push({ name: e.name, method: e.method, oldCompressed: e.compressedSize, newCompressed: newCompressed.length, oldUncompressed: e.uncompressedSize, newUncompressed: newData.length });
+      changedCount++;
+    } else {
+      processed.push(e);
+      unchangedCount++;
     }
   }
-  return sha256(contentDigestPrefixDigest(concat(...chunks)));
-}
 
-function lp(x){return concat(u32le(x.length),x);}
-function buildV2SignedData(digest,cert){
-  const digestRecord=concat(u32le(0x0103),lp(digest));
-  const digests=lp(digestRecord);
-  const certs=lp(lp(cert));
-  const attrs=lp(new Uint8Array(0));
-  return concat(digests,certs,attrs);
-}
-async function buildV2Block(segments, key){
-  const cert=b64(DEMO_CERT_DER_B64), spki=b64(DEMO_SPKI_DER_B64);
-  const digest=await computeChunkedDigest(segments);
-  const signedData=buildV2SignedData(digest,cert);
-  const signature=await rsaSha256(key,signedData);
-  const sigRecord=concat(u32le(0x0103),lp(signature));
-  const signatures=lp(sigRecord);
-  const signer=lp(concat(lp(signedData),signatures,lp(spki)));
-  const signers=lp(signer);
-  const pairValue=signers;
-  const pairLen=4+pairValue.length;
-  const pair=concat(u64le(pairLen),u32le(APK_V2_ID),pairValue);
-  const size=24+pair.length;
-  return concat(u64le(size),pair,u64le(size),enc.encode('APK Sig Block 42'));
-}
+  if (totalReplacements === 0) throw new Error(`No exact ${SOURCE_PACKAGE} references were found.`);
+  const built = await buildApk(processed, apk.eocdComment);
+  const out = await readApk(built.bytes);
 
-async function buildZip(entries, key){
-  // Build v1 signature entries first. They are included in v2 content.
-  const clean=entries.filter(e=>!e.name.startsWith('META-INF/'));
-  const manifestSections=[];
-  for(const e of clean){
-    const digest=await sha256(e.data);
-    manifestSections.push(`Name: ${e.name}\r\nSHA-256-Digest: ${b64encode(digest)}\r\n\r\n`);
-  }
-  const manifestText=`Manifest-Version: 1.0\r\nCreated-By: Neo Package Rename Demo\r\n\r\n${manifestSections.join('')}`;
-  const manifest=enc.encode(manifestText);
-  const sfText=`Signature-Version: 1.0\r\nCreated-By: Neo Package Rename Demo\r\nX-Android-APK-Signed: 2\r\nSHA-256-Digest-Manifest: ${b64encode(await sha256(manifest))}\r\n\r\n`;
-  const sf=enc.encode(sfText);
-  const cms=await makeCmsSignature(sf,key);
-  const signedEntries=[
-    ...clean,
-    {name:'META-INF/MANIFEST.MF',data:manifest},
-    {name:'META-INF/NEO.SF',data:sf},
-    {name:'META-INF/NEO.RSA',data:cms},
-  ].map(e=>({...e,crc:crc32(e.data)}));
-
-  const localParts=[]; const central=[]; let offset=0;
-  for(const e of signedEntries){
-    const local=buildLocalEntry(e.name,e.data,e.crc); localParts.push(local); central.push(buildCentralEntry(e.name,e.data,e.crc,offset)); offset+=local.length;
-  }
-  const localBytes=concat(...localParts);
-  const centralBytes=concat(...central);
-  // First pass only determines the signing block size; the digest value has fixed length.
-  const sizeProbeEocd=buildEocd(signedEntries.length,centralBytes.length,localBytes.length);
-  const sizeProbeBlock=await buildV2Block([localBytes,centralBytes,sizeProbeEocd],key);
-  const finalCdOffset=localBytes.length+sizeProbeBlock.length;
-  const actualEocd=buildEocd(signedEntries.length,centralBytes.length,finalCdOffset);
-
-  // Per Android's v2 spec, the EOCD CD-offset field is hashed as the offset of the
-  // APK signing block, not the final central directory offset.
-  const digestEocd=buildEocd(signedEntries.length,centralBytes.length,localBytes.length);
-  const finalBlock=await buildV2Block([localBytes,centralBytes,digestEocd],key);
-  if(finalBlock.length!==sizeProbeBlock.length) throw new Error('Internal signing error: signing block size changed between passes.');
-  return concat(localBytes,finalBlock,centralBytes,actualEocd);
-}
-
-export async function renameApk(file){
-  const apk=await readApk(file);
-  const manifestHits=replacePackageBytes(apk.manifest.data).count;
-  if(manifestHits===0) throw new Error(`The APK manifest does not contain exact package name ${SOURCE_PACKAGE}. This demo intentionally refuses to guess.`);
-
-  const {entries,totalReplacements}=patchEntries(apk.entries);
-  if(totalReplacements===0) throw new Error(`No exact ${SOURCE_PACKAGE} package references were found in the APK.`);
-
-  const key=await importPrivateKey();
-  const out=await buildZip(entries,key);
-  const scan=await readApk(out);
-  const outManifest=scan.manifest.data;
-
-  const outputTargetCount=countBytes(outManifest,enc.encode(TARGET_PACKAGE));
-  const sourcePackageBytes=enc.encode(SOURCE_PACKAGE);
-  let sourceRemaining=0;
-  let targetAcrossApk=0;
-  for(const entry of scan.entries){
-    if(entry.name.startsWith('META-INF/')) continue;
-    sourceRemaining += countBytes(entry.data,sourcePackageBytes);
-    targetAcrossApk += countBytes(entry.data,enc.encode(TARGET_PACKAGE));
+  let sourceRemaining = 0;
+  let targetCount = 0;
+  for (const e of out.entries) {
+    const data = await decodeEntry(e);
+    sourceRemaining += countExact(data, variants.from8) + countExact(data, variants.from16);
+    targetCount += countExact(data, variants.to8) + countExact(data, variants.to16);
   }
 
-  const hasV1Manifest=scan.entries.some(e=>e.name==='META-INF/MANIFEST.MF');
-  const hasV1Signature=scan.entries.some(e=>e.name==='META-INF/NEO.SF') && scan.entries.some(e=>e.name==='META-INF/NEO.RSA');
-  const hasV2Magic=locateApkSigningBlock(out) >= 0;
-  const sourceName=file.name||'app.apk';
-  const targetName=sourceName.toLowerCase().endsWith('.apk') ? sourceName.replace(/\.apk$/i,'-neo.apk') : `${sourceName}-neo.apk`;
+  if (sourceRemaining > 0) throw new Error('Safety stop: source package references remain in output APK. No download was created.');
+  if (out.entries.some(e => isSignatureEntry(e.name))) throw new Error('Safety stop: stale signing metadata remains.');
+  if (!out.entries.some(e => e.name === 'AndroidManifest.xml')) throw new Error('Safety stop: AndroidManifest.xml is missing after rebuild.');
+
+  const outputName = (file.name || 'app.apk').replace(/\.apk$/i, '-neo-unsigned.apk');
   return {
-    bytes:out,
-    originalPackage:SOURCE_PACKAGE,
-    targetPackage:TARGET_PACKAGE,
-    manifestReplacements:manifestHits,
+    bytes: built.bytes,
+    originalPackage: SOURCE_PACKAGE,
+    targetPackage: TARGET_PACKAGE,
+    inputSize: file.size,
+    outputSize: built.bytes.length,
+    manifestReplacements: manifestResult.count,
     totalReplacements,
-    outputName:targetName,
-    inputSize:apk.originalBytes.length,
-    outputSize:out.length,
-    validation:{
-      manifestTargetPresent:outputTargetCount>0,
-      sourceExactStillPresentInOutput:sourceRemaining>0,
-      targetReferencesAcrossApk:targetAcrossApk,
-      v1AndV2:hasV1Manifest && hasV1Signature && hasV2Magic,
+    changedFiles,
+    changedFileCount: changedCount,
+    preservedFileCount: unchangedCount,
+    signatureRemoved,
+    validation: {
+      sourceGone: sourceRemaining === 0,
+      targetReferences: targetCount,
+      manifestTargetPresent: countExact(await decodeEntry(out.entries.find(e => e.name === 'AndroidManifest.xml')), variants.to8) > 0 || countExact(await decodeEntry(out.entries.find(e => e.name === 'AndroidManifest.xml')), variants.to16) > 0,
+      signatureEntriesRemoved: !out.entries.some(e => isSignatureEntry(e.name)),
+      sizeDeltaPercent: ((built.bytes.length - file.size) / file.size) * 100,
     },
+    outputName,
   };
 }
 
-function locateApkSigningBlock(apk){
-  try{
-    const eocd=locateEocd(apk);
-    const cdOffset=readU32(apk,eocd+16);
-    if(cdOffset<24 || cdOffset>apk.length) return -1;
-    const footerStart=cdOffset-24;
-    const magic=enc.encode('APK Sig Block 42');
-    const magicStart=cdOffset-16;
-    if(magicStart<0) return -1;
-    for(let i=0;i<magic.length;i++) if(apk[magicStart+i]!==magic[i]) return -1;
-    const blockSize=Number(readU64(apk,footerStart));
-    const blockStart=cdOffset-(blockSize+8);
-    if(blockStart<0 || blockStart+blockSize+24>apk.length) return -1;
-    return blockStart;
-  }catch{ return -1; }
+function countExact(data, needle) {
+  let c = 0;
+  for (let i = 0; i <= data.length - needle.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) if (data[i + j] !== needle[j]) { ok = false; break; }
+    if (ok) { c++; i += needle.length - 1; }
+  }
+  return c;
 }
 
+export { SOURCE_PACKAGE, TARGET_PACKAGE, isSignatureEntry };
