@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check public/app.js && node --check public/processor.js"
+    "check": "node --check public/app.js && node --check public/processor.js && node --check public/processor-core.js && node --check public/processor-worker.js",
+    "test": "node test/processor-core.test.mjs"
   }
 }

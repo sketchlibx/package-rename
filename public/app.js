@@ -51,7 +51,7 @@ function updateProgress(event) {
   // dedicated Current field and the Details panel.
   setStatus(event.stage, event.message || '', event.percent);
   const last = progressState.logs.at(-1);
-  if (!last || last.stage !== event.stage || Math.abs((last.percent || 0) - (event.percent || 0)) >= 2 || event.percent >= 100 || event.percent === 0) addLog(event);
+  if (!last || last.stage !== event.stage || Math.abs((last.percent || 0) - (event.percent || 0)) >= 2 || /Decompressing/.test(event.message || '') || event.percent >= 100 || event.percent === 0) addLog(event);
   $('detailCurrent').textContent = event.currentEntry || '—';
   $('detailCount').textContent = event.totalEntries ? `${event.processedEntries || 0} / ${event.totalEntries}` : '—';
   $('detailChanged').textContent = String(event.changedCount ?? progressState.changedCount ?? 0);

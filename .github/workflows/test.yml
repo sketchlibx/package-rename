@@ -1,0 +1,18 @@
+name: Rename tool regression tests
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test --if-present
+      - run: node --check public/app.js
+      - run: node --check public/processor.js
+      - run: node --check public/processor-core.js
+      - run: node --check public/processor-worker.js
+      - run: node test/processor-core.test.mjs
